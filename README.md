@@ -2,9 +2,7 @@
 
 Chrome 扩展：右键网页图片、拖入本地图片或粘贴截图，一键反推出**中英双语**的图片提示词，可直接粘贴到文生图工具里使用。
 
-<p align="center">
-  <b>Manifest V3</b> · 无后端 · 数据不出本机 · 支持 Chrome / Edge / Brave
-</p>
+**Manifest V3** · 无后端 · 数据不出本机 · 支持 Chrome / Edge / Brave
 
 ---
 
