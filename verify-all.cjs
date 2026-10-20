@@ -36,6 +36,7 @@ const TESTS = [
   ['naming-test.cjs', '命名格式'],
   ['apikey-test.cjs', 'API Key 保存'],
   ['reverse-repeat-test.cjs', '重复反推'],
+  ['timeout-test.cjs', '超时与重试'],
 ];
 
 /** 静态检查：只关心退出码，输出是给人看的 */

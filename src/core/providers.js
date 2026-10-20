@@ -54,34 +54,113 @@ export const PROVIDERS = {
 
 export const DEFAULT_PROVIDER = 'agnes';
 
+/**
+ * 视觉模型调用的超时上限。
+ *
+ * 为什么必须有：
+ *   MV3 的 service worker 空闲 30 秒就被回收。视觉反推正常要 5~10 秒，
+ *   一旦服务端排队或限流，fetch 可能挂住十几秒 —— 等它回来时 SW 早被杀了，
+ *   面板那边永远等不到 record，表现为「反推不出结果」且没有任何报错。
+ *
+ * 为什么是 90 秒而不是 30：
+ *   必须显著长于 SW 的空闲回收窗口，否则超时本身就会先杀死 worker。
+ *   取图/解码已有 15s / 10s 的独立超时，这里的预算只需覆盖模型推理。
+ */
+const VISION_TIMEOUT_MS = 90_000;
+
+/** 可重试的 HTTP 状态：限流与网关类错误才是「等一下会好」 */
+const RETRYABLE_STATUS = new Set([408, 425, 429, 500, 502, 503, 504]);
+
+/**
+ * 退避等待。
+ *
+ * 必须是 const箭头函数**提前声明**：下面 callGemini 与
+ * callOpenAICompatible 都在它之前调用，而 const 不会提升，
+ * 用 function 声明才会被提升到作用域顶部。
+ * （写成 function 声明原本没问题，但这里统一成const 风格时最容易踩这个坑。）
+ */
+function sleep(ms) {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+/**
+ * 带**真正中止**能力的超时。
+ *
+ * 之前用的是 withTimeout()（background.js 里那个），它是 Promise.race ——
+ * 超时后只是不再等待，底层 fetch 仍在跑、连接仍被占着。
+ * AbortController 才能真正断开，这也是 providers.js 里
+ * 早就预留 signal 参数却从来没人传的原因。
+ */
+function abortableFetch(url, options = {}, ms = VISION_TIMEOUT_MS) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(new Error('timeout')), ms);
+  // 外部若已传入 signal（如整体取消），与内部超时合并成一个
+  const outer = options.signal;
+  if (outer) {
+    if (outer.aborted) ctrl.abort(outer.reason);
+    else outer.addEventListener('abort', () => ctrl.abort(outer.reason), { once: true });
+  }
+  return fetch(url, { ...options, signal: ctrl.signal }).finally(() => clearTimeout(timer));
+}
+
+/** 把 abort 造成的失败翻译成用户看得懂的话 */
+function describeFetchError(e, label) {
+  const msg = String(e?.message || e || '');
+  if (/timeout|abort/i.test(msg)) {
+    return new Error(
+      `${label} 响应超时（${Math.round(VISION_TIMEOUT_MS / 1000)} 秒）。` +
+        '通常是模型服务繁忙或网络不通，换个服务商或稍后重试。'
+    );
+  }
+  return e;
+}
+
 /** 探测用：轻量请求，验证 key 与模型可用 */
 export async function pingVision({ provider, apiKey, model }) {
   const p = resolve(provider, apiKey, model);
   if (!p) throw new Error('未配置 API Key');
 
-  if (p.protocol === 'gemini') {
-    const res = await fetch(`${p.baseUrl}/${p.model}?key=${p.apiKey}`);
-    if (!res.ok) throw new Error(`Gemini 返回 ${res.status}`);
-    return { ok: true, model: p.model };
-  }
+  // 探测必须自己带超时。共用 VISION_TIMEOUT_MS 太长了 ——
+  // 「测试连接」是交互动作，用户盯着按钮等，一次 90 秒的等待
+  // 会被当成卡死。这里给 20 秒：够穿透正常网络抖动，又不会让人失去耐心。
+  const PING_TIMEOUT_MS = 20_000;
 
-  const res = await fetch(`${p.baseUrl}${p.endpoint}`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${p.apiKey}`,
-    },
-    body: JSON.stringify({
-      model: p.model,
-      max_tokens: 16,
-      messages: [{ role: 'user', content: 'ping' }],
-    }),
-  });
-  if (!res.ok) {
-    const t = await res.text();
-    throw new Error(`${p.label} 返回 ${res.status}${t ? ' · ' + t.slice(0, 160) : ''}`);
+  try {
+    if (p.protocol === 'gemini') {
+      const res = await abortableFetch(`${p.baseUrl}/${p.model}?key=${p.apiKey}`, {}, PING_TIMEOUT_MS);
+      if (!res.ok) throw new Error(`Gemini 返回 ${res.status}`);
+      return { ok: true, model: p.model };
+    }
+
+    const res = await abortableFetch(
+      `${p.baseUrl}${p.endpoint}`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${p.apiKey}`,
+        },
+        body: JSON.stringify({
+          model: p.model,
+          max_tokens: 16,
+          messages: [{ role: 'user', content: 'ping' }],
+        }),
+      },
+      PING_TIMEOUT_MS
+    );
+    if (!res.ok) {
+      const t = await res.text();
+      throw new Error(`${p.label} 返回 ${res.status}${t ? ' · ' + t.slice(0, 160) : ''}`);
+    }
+    return { ok: true, model: p.model };
+  } catch (e) {
+    // 超时/网络错误要说人话，否则用户只看到「Failed to fetch」，
+    // 无法判断是自己的 key 问题还是网络问题。
+    if (/timeout|abort|Failed to fetch|NetworkError|load failed/i.test(String(e?.message || e))) {
+      throw new Error(`连接 ${p.label} 失败：网络不通或响应超时（20 秒）。请检查网络后重试。`);
+    }
+    throw e;
   }
-  return { ok: true, model: p.model };
 }
 
 function resolve(provider, apiKey, model) {
@@ -142,12 +221,42 @@ async function callGemini({ p, imageBase64, mimeType, prompt, schema, signal }) 
     },
   };
 
-  const res = await fetch(`${p.baseUrl}/${p.model}:generateContent?key=${p.apiKey}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-    signal,
-  });
+  let res;
+  try {
+    res = await abortableFetch(
+      `${p.baseUrl}/${p.model}:generateContent?key=${p.apiKey}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+        signal,
+      }
+    );
+  } catch (e) {
+    throw describeFetchError(e, p.label);
+  }
+  if (!res.ok) {
+    // 限流 / 网关抖动时退避重试一次。
+    //
+    // 只对明确的「等一下会好」状态重试：401/403 是 key 问题，
+    // 重试多少次都一样，只会白白让用户多等一轮。
+    if (RETRYABLE_STATUS.has(res.status)) {
+      await sleep(1200);
+      try {
+        res = await abortableFetch(
+          `${p.baseUrl}/${p.model}:generateContent?key=${p.apiKey}`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+            signal,
+          }
+        );
+      } catch (e) {
+        throw describeFetchError(e, p.label);
+      }
+    }
+  }
   if (!res.ok) throw new Error(`Gemini ${res.status} · ${(await res.text()).slice(0, 200)}`);
 
   const data = await res.json();
@@ -167,6 +276,8 @@ async function callOpenAICompatible({ p, imageBase64, mimeType, prompt, schema, 
     const body = {
       model: p.model,
       temperature: 0.2,
+      // 限流用的窗口。给不出经验值时留空，由服务端用自己的默认行为。
+      ...(p.rateLimitFallback ? { rate_limit_fallback: 'none' } : {}),
       messages: [
         {
           role: 'user',
@@ -179,7 +290,7 @@ async function callOpenAICompatible({ p, imageBase64, mimeType, prompt, schema, 
     };
     if (useJsonMode) body.response_format = { type: 'json_object' };
 
-    const res = await fetch(`${p.baseUrl}${p.endpoint}`, {
+    const res = await abortableFetch(`${p.baseUrl}${p.endpoint}`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -202,9 +313,22 @@ async function callOpenAICompatible({ p, imageBase64, mimeType, prompt, schema, 
   try {
     text = await send(wantJson);
   } catch (e) {
-    // 部分兼容实现不支持 response_format，降级重试一次
-    if (e.status === 400 && wantJson) text = await send(false);
-    else throw e;
+    const timedOut = /timeout|abort/i.test(String(e?.message || e));
+
+    // 降级重试的两条硬性前提，缺一不可：
+    //   1. 明确是 400（部分兼容实现不支持 response_format）
+    //   2. **不是超时** —— 超时重试等于把等待翻倍，
+    //      而超时的根因是服务端忙/网络不通，重发同样会超时。
+    //      原来没有第2 条，所以服务端一慢就变成「等两倍时间然后失败」。
+    if (e.status === 400 && wantJson && !timedOut) {
+      text = await send(false);
+    } else if (RETRYABLE_STATUS.has(e.status)) {
+      // 限流 / 网关：退避后重试一次，给一次真正的机会
+      await sleep(1200);
+      text = await send(wantJson);
+    } else {
+      throw describeFetchError(e, p.label);
+    }
   }
   return extractJson(text);
 }

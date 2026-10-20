@@ -1714,10 +1714,35 @@ async function processImage(dataUrl, meta) {
   await openPanel({ loading: true, originUrl: meta.originUrl, source: meta.source });
 
   const settings = await chrome.storage.local.get(getSettings());
-  const { fields, provider } = await reverseImage({
-    imageBase64: base64,
-    mimeType: mime,
-  });
+
+  // 保活 service worker。
+  //
+  // MV3 的 SW 空闲 30 秒就会被回收。视觉反推正常 5~10 秒，
+  // 模型繁忙时可能到几十秒 —— SW 一旦被回收，这个 await 永远等不到结果，
+  // 面板那边只会一直转圈，用户看不到任何报错（表现就是「反推不出结果」）。
+  //
+  // 定时写 storage 是一个最小的保活手段：它产生扩展级活动，
+  // 让 Chrome 判定 SW 还在被使用。间隔必须显著小于 30 秒，
+  // 25 秒是留了余量的取值。
+  const keepAlive = setInterval(() => {
+    chrome.storage.local.set({ prSwAlive: Date.now() }).catch(() => {});
+  }, 25_000);
+
+  let fields;
+  let provider;
+  try {
+    ({ fields, provider } = await reverseImage({
+      imageBase64: base64,
+      mimeType: mime,
+    }));
+  } catch (e) {
+    // 失败也要把面板从「正在反推」状态里放出来，
+    // 否则用户只会看到一个永远转圈的界面 + 一个页面 toast。
+    await openPanel({ error: String((e && e.message) || e) });
+    throw e;
+  } finally {
+    clearInterval(keepAlive);
+  }
 
   const normalized = normalizeFields(fields);
   // 记下这次用的是哪套提示词方案 —— 否则用户看到结果时
