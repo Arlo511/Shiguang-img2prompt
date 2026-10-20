@@ -1312,25 +1312,38 @@ function resolveImageInPage(srcUrl, preferSrcUrl) {
     if (srcUrl) {
       const key = srcUrl.split(/[?!#]/)[0];
       const imgs = Array.from(document.images || []);
+
+      // 第一档：精确匹配。无歧义，一定指向那张图，必须最先查。
       const hit =
         imgs.find((i) => i.currentSrc === srcUrl || i.src === srcUrl) ||
         imgs.find((i) => (i.currentSrc || '').split(/[?!#]/)[0] === key);
-
-      // 曾经还有第三档「只比文件名」的兜底：
-      //   imgs.find((i) => url.endsWith(key.split('/').pop()))
-      // 已删除。CDN 图片的 URL 结尾高度相似（同一批素材常共用文件名），
-      // 这条几乎必然命中**另一张**图，而且一旦命中就 return，
-      // 后面更可靠的标记命中路径根本没机会跑 ——
-      // 表现为「右键选A、反推出来的是B」。
-      //
-      // 宁可这一档落空、继续往下走去查标记，也不能在这里猜。
-      // 两条精确匹配足够覆盖 srcUrl 确实来自某个 <img> 的情形；
-      // 落空时后面的几何与标记路径能正确处理。
-
       if (hit) {
         const r = fromImg(hit);
         if (r?.url) return { ...r, source: preferSrcUrl ? 'browser' : r.source };
       }
+
+      // 第二档：只比文件名。三处收紧，否则会命中另一张图：
+      //   - endsWith 会让 a.jpg 命中 abc.jpg  → 改成全等
+      //   - 短名在本页可能对应几十张图        → 要求长度 >= 12
+      //   - find 取第一个，正确的那张未必是它 → 命中多个就放弃
+      //
+      // 这里曾被我整个删掉，理由是「CDN 文件名相似会命中别的图」。
+      // 那个判断没错，但**处理方式错了**：删掉后这一档落空，会继续
+      // 往下走到「扫全页取最大图」—— 那才是真正与右键目标无关的结果，
+      // 反而更糟（且图更大、上传更慢）。保留并收紧才是正解。
+      const file = key.split('/').pop();
+      if (file && file.length >= 12) {
+        const same = imgs.filter((i) => {
+          const u = (i.currentSrc || i.src || '').split(/[?!#]/)[0];
+          return (u.split('/').pop() || '') === file;
+        });
+        if (same.length === 1) {
+          const r = fromImg(same[0]);
+          if (r?.url) return { ...r, source: preferSrcUrl ? 'browser' : r.source };
+        }
+      }
+    }
+
       // 页面上找不到对应 img（可能在 iframe 里），但 srcUrl 本身可用
       if (preferSrcUrl) {
         return out({ url: stripCdn(abs(srcUrl)), source: 'browser' });
@@ -1428,12 +1441,31 @@ function resolveImageInPage(srcUrl, preferSrcUrl) {
     }
 
     // --- 路径 D：background-image 容器兜底 ---
+    //
+    // 原实现遍历 3000 个容器，**返回第一个带背景图的**，不看大小不看位置。
+    // 由于这段代码会在**每个 frame** 里各跑一次，页面上任何一个不起眼的
+    // 带背景图元素（图标块、进度条、渐变占位）都会产出一个
+    // source:'scan' 的结果。而 scan 的 rank 只有 10，但它往往是
+    // **唯一可能非空的分支** —— 于是「不知道」被伪装成「大概是这张」。
+    //
+    // 现在要求：必须**明显大**（>=200x200）才认，且取面积最大的那个。
+    // 仍不合适时宁可落空报错 —— 一个明确的定位失败提示，
+    // 比给一张无关的图、让用户白等十几秒模型要有用得多。
+    const bgHits = [];
     const containers = Array.from(
       document.querySelectorAll('div,section,li,span,a')
     ).slice(0, 3000);
     for (const el of containers) {
       const r = fromBackground(el);
-      if (r?.url) return { ...r, source: 'scan' };
+      if (!r?.url) continue;
+      const w = Number(r.w) || 0;
+      const h = Number(r.h) || 0;
+      if (w >= 200 && h >= 200) bgHits.push(r);
+      if (bgHits.length >= 20) break;
+    }
+    if (bgHits.length) {
+      bgHits.sort((a, b) => (b.w || 0) * (b.h || 0) - (a.w || 0) * (a.h || 0));
+      return { ...bgHits[0], source: 'scan' };
     }
 
     return { ok: false, error: '未能定位到图片，请刷新页面后重试' };

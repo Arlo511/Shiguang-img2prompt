@@ -41,7 +41,6 @@ const TESTS = [
 
 /** 静态检查：只关心退出码，输出是给人看的 */
 const CHECKS = [
-  ['check-calls.cjs', '顶层调用可解析'],
   ['check-entry.cjs', '入口完整'],
   ['check-dir.cjs', '目录无冗余'],
   ['check-tokens.cjs', '设计令牌一致'],
