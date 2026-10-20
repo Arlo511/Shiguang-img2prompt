@@ -1,0 +1,889 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<!-- 窗口标题栏显示的就是这个。缺了它 Chrome 会拿 URL 顶上，
+     于是标题栏变成「chrome-extension://nkcliplpifklkdhfmgmeedoh...」这种
+     截断的乱码 —— 那不是系统限制，是没写 title。 -->
+<title>拾光 Img2Prompt</title>
+<style>
+  @import url('../tokens.css');
+
+  * { box-sizing: border-box; }
+
+  /* hidden 属性的 display: none 会被任何带 display 的 CSS 规则覆盖
+     （比如 .vgrid { display: grid }、#lightbox { display: flex }），
+     导致本该隐藏的元素仍显示出来。这条全局规则兜底，
+     保证 [hidden] 永远隐藏，优先级高于后续同选择器规则。 */
+  [hidden] { display: none !important; }
+
+  /* 字体栈、字号、行高、焦点环、滚动条已在 tokens.css 里定义，
+     面板与设置页共用，避免两边分叉。 */
+  body {
+    margin: 0;
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+  }
+  /* ===== 顶栏 =====
+     46px 定高 + 一条底边，与设置页同规格。 */
+  header {
+    height: 46px; padding: 0 14px;
+    display: flex; align-items: center; gap: 9px;
+    flex: none;
+    border-bottom: 1px solid var(--line);
+    background: var(--surface-2);
+  }
+  header .logo {
+    width: 22px; height: 22px; border-radius: 6px; flex: none;
+    /* 用真实图标而不是纯色块 —— 顶栏是品牌露出的主要位置 */
+    background: var(--brand) url('../../icons/icon48.png') center/cover no-repeat;
+  }
+  header h1 {
+    font-size: var(--fs-lg); font-weight: 600; margin: 0; flex: 1;
+    letter-spacing: -.01em;   /* 中文标题收紧一点，避免松散 */
+  }
+  /* 清空历史是危险操作：降级成文字按钮 + 悬停才显红，
+     不与主操作抢视觉重量，也不让红色常驻干扰。 */
+  header .ghost {
+    font-size: var(--fs-sm); padding: 4px 9px; cursor: pointer;
+    border: none; border-radius: var(--radius-sm);
+    background: transparent; color: var(--ink-3);
+    transition: background .12s ease, color .12s ease;
+  }
+  header .ghost:hover { background: var(--danger-soft); color: var(--danger-ink); }
+
+  main { flex: 1; overflow-y: auto; }
+
+  /* ===== 图片优先：大图预览置顶 =====
+     object-fit 从cover 改成 contain：反推的对象经常是人物/商品，
+     cover 会裁掉边缘导致用户对不上图。contain 让整张图都在。 */
+  .hero {
+    width: 100%; height: 190px;
+    background: var(--surface-3);
+    display: flex; align-items: center; justify-content: center;
+    font-size: var(--fs-md); color: var(--ink-4);
+    overflow: hidden;
+  }
+  .hero img { width: 100%; height: 100%; object-fit: contain; display: block; cursor: zoom-in; }
+
+  .pad { padding: 14px 16px 16px; }
+
+  /* ===== 居中说明行 ===== */
+  .cap {
+    font-size: var(--fs-md); color: var(--ink-3);
+    text-align: center; margin-bottom: 13px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+
+  /* ===== 引擎分段控件 ===== */
+  .seg {
+    display: flex; gap: 2px; padding: 2px;
+    background: var(--surface-3); border-radius: var(--radius); margin-bottom: 13px;
+  }
+  .seg button {
+    flex: 1; padding: 5px 0; font-size: var(--fs-sm); cursor: pointer;
+    border: none; border-radius: 6px;
+    background: transparent; color: var(--ink-3);
+  }
+  .seg button[aria-pressed="true"] {
+    background: var(--surface); color: var(--ink);
+    font-weight: 500; box-shadow: var(--shadow-1);
+  }
+
+  /* ===== 结果流：同图多次反推的缩略图网格 =====
+     原先是「缩略图 + 两段提示词摘要」的卡片，占掉大半屏，
+     而这里要回答的只是「这是第几次、想看哪次」——
+     摘要文字在下方 textarea 里已经能完整看到，重复一遍是冗余。 */
+  .vgrid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(84px, 1fr));
+    gap: 7px; margin-bottom: 11px;
+  }
+  .vitem {
+    position: relative;
+    border-radius: var(--radius-sm); overflow: hidden;
+    cursor: pointer; background: var(--surface-3);
+    border: 1px solid var(--line);
+    padding: 0; text-align: left; font: inherit;
+    /* 抬升 + 描边一起过渡：单一属性没法做出「浮起来」的手感 */
+    transition: transform .16s cubic-bezier(.2,.7,.3,1),
+                border-color .16s ease,
+                box-shadow .16s ease;
+    will-change: transform;
+  }
+  /* hover：轻微上浮并放大。幅度要小 ——
+     格子只有 84px，缩放超过 3% 就会挤到相邻格子。 */
+  .vitem:hover {
+    border-color: var(--brand);
+    transform: translateY(-2px) scale(1.03);
+    box-shadow: 0 4px 12px rgba(31,29,28,.14);
+  }
+  .vitem:active { transform: translateY(0) scale(.99); transition-duration: .08s; }
+  .vitem:focus-visible {
+    outline: 2px solid var(--brand);
+    outline-offset: 2px;
+  }
+  /* 当前查看的那次：品牌色描边 + 呼吸光圈。
+     光圈用 box-shadow 的 spread 做慢速脉冲，比加第二层元素便宜。 */
+  .vitem.active {
+    border-color: var(--brand);
+    animation: vitem-pulse 2.4s ease-in-out infinite;
+  }
+  @keyframes vitem-pulse {
+    0%, 100% { box-shadow: 0 0 0 2px color-mix(in srgb, var(--brand) 28%, transparent); }
+    50%      { box-shadow: 0 0 0 4px color-mix(in srgb, var(--brand) 12%, transparent); }
+  }
+  /* 缩略图淡入：IndexedDB 读图是异步的，
+     不做过渡会出现「格子先空一拍再啪地冒出图」。 */
+  /* 没有缩略图时的占位：极慢的呼吸，避免像一块死掉的灰砖。
+     用 opacity 而非 background 动画 —— 后者会持续触发重绘。 */
+  .vitem .ph {
+    width: 100%; aspect-ratio: 1;
+    background: var(--surface-3);
+    animation: ph-breathe 2s ease-in-out infinite;
+  }
+  @keyframes ph-breathe {
+    0%, 100% { opacity: 1; }
+    50%      { opacity: .55; }
+  }
+  .vitem img {
+    width: 100%; aspect-ratio: 1; object-fit: cover; display: block;
+    animation: vitem-fade .22s ease both;
+  }
+  @keyframes vitem-fade {
+    from { opacity: 0; transform: scale(1.04); }
+    to   { opacity: 1; transform: scale(1); }
+  }
+  /* 序号压在缩略图左下角：不占额外高度，
+     缩略图完整可见才便于比较内容。 */
+  .vitem .seq {
+    position: absolute; left: 4px; bottom: 4px;
+    font: 600 10px/1 var(--font-mono);
+    font-variant-numeric: tabular-nums;
+    color: #fff; background: rgba(31,29,28,.72);
+    padding: 3px 5px; border-radius: 4px;
+    pointer-events: none;
+  }
+  .vitem.active .seq { background: var(--brand); }
+
+  /* 系统开了「减少动态效果」就别动 ——
+     无限循环的脉冲光圈属于会被这个设置针对的那类动画。 */
+  @media (prefers-reduced-motion: reduce) {
+    .vitem, .vitem img, .vitem .ph,
+    .hitem, .hitem img, .hitem .ph,
+    .fitem, .fitem img, .fitem .ph { transition: none; animation: none; }
+    .vitem:hover, .vitem:active,
+    .hitem:hover, .hitem:active,
+    .fitem:hover, .fitem:active { transform: none; }
+  }
+
+  /* ===== 提示词正文 =====
+     加了标签头「提示词」，否则一整块 textarea 看不出是什么 */
+  .prompt-wrap { margin-bottom: 11px; }
+  .prompt-wrap .lab {
+    display: flex; align-items: center; justify-content: space-between;
+    font-size: var(--fs-sm); color: var(--ink-4); margin-bottom: 6px;
+    padding: 0 1px;
+  }
+  .prompt-wrap textarea {
+    width: 100%; min-height: 148px; resize: vertical;
+    padding: 12px 13px;
+    font: 12px/1.75 ui-monospace, SFMono-Regular, Menlo, monospace;
+    border: 1px solid var(--line); border-radius: var(--radius);
+    background: var(--surface); color: var(--ink);
+  }
+  .prompt-wrap textarea:focus {
+    outline: none;
+    border-color: var(--brand);
+    /* 焦点环用品牌色的低透明度扩散，与全局 focus-visible 同源 */
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--brand) 18%, transparent);
+  }
+
+  /* ===== 底部通栏按钮 ===== */
+  .foot { display: flex; gap: 8px; }
+  .foot button {
+    height: 34px; padding: 0 14px; cursor: pointer; font-size: var(--fs-md);
+    border-radius: var(--radius-sm); border: 1px solid var(--line);
+    background: var(--surface); color: var(--ink-2);
+    transition: background .12s ease, border-color .12s ease, color .12s ease;
+  }
+  .foot button:hover { background: var(--surface-3); border-color: var(--line-2); }
+  /* 主操作用品牌绿实底：界面的视觉重心，也是绿色出现的主要位置。
+     之前这里是黑色而 hover 却变绿，两者是矛盾的，现已统一。 */
+  .foot button.primary {
+    flex: 1; font-weight: 500;
+    background: var(--brand); color: #fff; border-color: var(--brand);
+  }
+  .foot button.primary:hover { background: var(--brand-ink); border-color: var(--brand-ink); }
+  .foot button.primary:active { background: var(--brand-ink); }
+  .foot button:disabled { opacity: .45; cursor: default; }
+  .foot button:disabled:hover { background: var(--brand); border-color: var(--brand); }
+
+  /* 收藏与历史所在的底部区 */
+  .sides { padding: 0 16px 16px; }
+  .sides .fold + .fold { margin-top: 8px; }
+
+  /* ===== 折叠 ===== */
+  .fold {
+    margin-top: 11px;
+    background: var(--surface); border: 1px solid var(--line);
+    border-radius: var(--radius); overflow: hidden;
+  }
+  .fold > summary {
+    padding: 9px 12px; font-size: var(--fs-md); color: var(--ink-3);
+    cursor: pointer; list-style: none;
+    display: flex; align-items: center; gap: 7px; user-select: none;
+  }
+  .fold > summary::-webkit-details-marker { display: none; }
+  .fold > summary::before {
+    content: ''; width: 0; height: 0;
+    border-left: 4px solid var(--ink-4);
+    border-top: 3.5px solid transparent;
+    border-bottom: 3.5px solid transparent;
+    transition: transform .15s ease; flex: none;
+  }
+  .fold[open] > summary::before { transform: rotate(90deg); }
+  .fold > summary:hover { background: var(--surface-3); }
+  /* 上内边距 = summary 的下内边距，让折叠体首行（筛选栏/ 提示行）
+     与标题之间留出呼吸空间。之前是 0，筛选按钮直接顶在标题下沿上。 */
+  .fold .fold-body { padding: 10px 12px 11px; }
+  .meta { font-size: var(--fs-sm); color: var(--ink-3); line-height: 1.7; }
+  .meta code {
+    background: var(--surface-3); padding: 1px 5px; border-radius: 4px;
+    font: 11px var(--font-mono);
+  }
+  /* 说明/提示块：用品牌色的浅底而非黄色 —— 黄色是一套独立配色，
+     和绿色主题并存会立刻显得是两套系统。 */
+  .note {
+    margin-top: 8px; padding: 7px 9px; border-radius: var(--radius-sm);
+    background: var(--brand-soft); color: var(--brand-text);
+    font-size: var(--fs-sm); line-height: 1.6;
+    border: 1px solid var(--brand-line);
+  }
+  .note:empty { display: none; }
+
+  /* 历史记录：纯图片网格，点击进入对应提示词 */
+  .hgrid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(62px, 1fr));
+    gap: 6px;
+  }
+  .hitem {
+    position: relative;
+    aspect-ratio: 1;
+    border-radius: var(--radius-sm); overflow: hidden;
+    cursor: pointer; background: var(--surface-3);
+    border: 1px solid var(--line);
+    padding: 0;
+    /* 与 .vitem 同一套动效参数，两处手感必须一致 */
+    transition: transform .16s cubic-bezier(.2,.7,.3,1),
+                border-color .16s ease,
+                box-shadow .16s ease;
+  }
+  /* 格子 62px，比 .vitem 小一号 —— 抬升距离随之减半，
+     放大保持 3%：再大就会盖住相邻格子的角标。 */
+  .hitem:hover {
+    border-color: var(--brand);
+    transform: translateY(-1.5px) scale(1.03);
+    box-shadow: 0 4px 12px rgba(31,29,28,.14);
+    z-index: 1;/* 抬起来的格子要压在邻居之上，否则被裁边 */
+  }
+  .hitem:active { transform: translateY(0) scale(.99); transition-duration: .08s; }
+  .hitem:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; }
+  .hitem img {
+    width: 100%; height: 100%; object-fit: cover; display: block;
+    animation: vitem-fade .22s ease both;
+  }
+  /* 次数角标：同一张图反推过多次时提示 */
+  .hitem .badge {
+    position: absolute; right: 3px; bottom: 3px;
+    font-size: 9px; line-height: 1; padding: 2px 4px;
+    background: rgba(41,37,36,.72); color: #fff;
+    border-radius: 4px;
+  }
+  /* 无缩略图时的占位（老记录可能缺字段） */
+  .hitem .ph {
+    width: 100%; height: 100%; background: var(--surface-3);
+    animation: ph-breathe 2s ease-in-out infinite;
+  }
+
+  /* 多选模式：左上角勾选框 */
+  .hitem.pick { cursor: pointer; }
+  .hitem .tick {
+    position: absolute; left: 4px; top: 4px;
+    width: 15px; height: 15px; border-radius: 4px;
+    border: 1.5px solid rgba(255,255,255,.9);
+    background: rgba(41,37,36,.35);
+    display: none; align-items: center; justify-content: center;
+  }
+  .hitem .tick::after {
+    content: ''; width: 7px; height: 3.5px;
+    border-left: 1.5px solid #fff; border-bottom: 1.5px solid #fff;
+    transform: rotate(-45deg) translate(0.5px, -1px);
+  }
+  .pickmode .hitem .tick { display: flex; }
+  .pickmode .hitem { padding: 0; }
+  .hitem.picked { border-color: var(--brand); box-shadow: 0 0 0 2px var(--brand); }
+  /* 已选中的格子不能再被hover 阴影顶掉选中环 ——
+     「选没选」比「鼠标在哪」更重要。 */
+  .hitem.picked:hover {
+    box-shadow: 0 0 0 2px var(--brand), 0 4px 12px rgba(31,29,28,.14);
+  }
+  .hitem.picked .tick { background: var(--brand); border-color: var(--brand); }
+
+  /* 筛选栏 */
+  .filters {
+    display: flex; gap: 5px; margin-bottom: 9px;
+    flex-wrap: wrap; align-items: center;
+  }
+  .chip {
+    font-size: var(--fs-sm); padding: 3px 9px; cursor: pointer;
+    border: 1px solid var(--line); border-radius: 20px;
+    background: var(--bg); color: var(--ink-3); white-space: nowrap;
+  }
+  .chip:hover { background: var(--surface-3); }
+  .chip.on { background: var(--brand); color: #fff; border-color: var(--brand); }
+  .filters .spacer { flex: 1; }
+  /* 危险操作按钮 */
+  .chip.danger { color: var(--danger-ink); border-color: var(--danger-line); }
+  .chip.danger:hover { background: var(--danger-soft); border-color: var(--danger-line); }
+  .selinfo {
+    font-size: var(--fs-sm); color: var(--brand); margin-bottom: 8px;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .selinfo button {
+    font-size: var(--fs-sm); border: none; background: none;
+    color: var(--ink-3); cursor: pointer; text-decoration: underline;
+    padding: 0;
+  }
+  .empty-h {
+    font-size: var(--fs-sm); color: var(--ink-4); text-align: center;
+    padding: 16px 0;
+  }
+
+  /* ===== 空态 =====
+     原设计是一句话居中 + 一张顶满宽的卡片，信息全挤在上半屏，
+     下面400px 全空。这里改成「图标 + 标题 + 三栏说明」的居中版式，
+     垂直重心压到上1/3，符合视线习惯。 */
+  .state { padding: 54px 26px 26px; text-align: center; color: var(--ink-3); }
+  /* 有图框撑着，plain 只需一个适中的留白；66px 是给小转圈调的，
+     132px 图框下会显得整体偏下。 */
+  .state.plain { padding-top: 40px; }
+
+  /* 空态的方形图标：用渐变方块 + 内嵌符号，不用图片资源 */
+  .state .glyph {
+    width: 52px; height: 52px; margin: 0 auto 18px;
+    border-radius: 15px;
+    background: var(--brand-soft);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 24px; color: var(--brand);
+    box-shadow: inset 0 1px 0 rgba(255,255,255,.7);
+  }
+  .state h2 {
+    font-size: var(--fs-xl); font-weight: 500; color: var(--ink);
+    margin: 0 0 6px; letter-spacing: .2px;
+  }
+  .state p { margin: 0; font-size: var(--fs-md); color: var(--ink-4); }
+
+  /* 进行中。原先只有一行小转圈文字，5~10 秒的等待里画面完全静止，
+     用户不知道是卡住了还是在跑。这里给一个图片占位框 + 扫描线：
+     反推的对象本来就是「一张图」，用图框承载进度在语义上也对得上。 */
+  .busy {
+    display: flex; flex-direction: column; align-items: center;
+    gap: 14px; padding: 4px 0 0;
+  }
+
+  /* 图框：外圈虚线缓慢旋转，内里一道扫描线上下往返 */
+  .scan {
+    position: relative; width: 132px; height: 132px;
+    border-radius: var(--radius-lg); overflow: hidden;
+    background: var(--surface-3);
+  }
+  .scan::before {
+    content: ''; position: absolute; inset: -40%;
+    border-radius: 50%;
+    border: 1px dashed var(--line);
+    animation: spin 6s linear infinite;
+  }
+  .scan::after {
+    content: ''; position: absolute; left: 0; right: 0; height: 42px;
+    /* 用 color-mix 派生品牌色的透明梯度 ——
+       直接写死 rgba 的橙色会在换主色后残留成一处不协调的光带，
+       而且十六进制扫描查不到 rgba 形式，很容易漏。 */
+    background: linear-gradient(
+      to bottom,
+      transparent 0%,
+      color-mix(in srgb, var(--brand) 16%, transparent) 45%,
+      color-mix(in srgb, var(--brand) 34%, transparent) 50%,
+      color-mix(in srgb, var(--brand) 16%, transparent) 55%,
+      transparent 100%
+    );
+    animation: sweep 1.6s cubic-bezier(.45,.05,.55,.95) infinite;
+  }
+  /* 框内静态图标压在扫描线下方，用 z-index 分层 */
+  .scan i {
+    position: absolute; inset: 0; z-index: 1;
+    display: flex; align-items: center; justify-content: center;
+    font-style: normal; font-size: 26px; color: var(--ink-4);
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  @keyframes sweep {
+    0%   { top: -42px; }
+    100% { top: 132px; }
+  }
+
+  /* 阶段指示：三个点循环点亮，对应取图 → 识别 → 组装。
+     只是「还在动」的信号，不谎报精确百分比。 */
+  .steps { display: flex; align-items: center; gap: 6px; }
+  .steps span {
+    width: 5px; height: 5px; border-radius: 50%;
+    background: var(--line);
+    animation: pulse 1.2s ease-in-out infinite;
+  }
+  .steps span:nth-child(2) { animation-delay: .16s; }
+  .steps span:nth-child(3) { animation-delay: .32s; }
+  @keyframes pulse {
+    0%, 60%, 100% { background: var(--line); transform: scale(1); }
+    30%           { background: var(--brand);   transform: scale(1.5); }
+  }
+
+  .busy b {
+    font-size: var(--fs-lg); font-weight: 500; color: var(--ink-2);
+  }
+  .busy em {
+    font-style: normal; font-size: var(--fs-sm); line-height: 1.6;
+    color: var(--ink-4); margin-top: -8px;
+  }
+
+  /* 主行动按钮：实心强调色，原来用的是纯黑，突兀且抢戏 */
+  /* .howto 是 #state 的兄弟节点，不继承它的 text-align:center，
+     必须自己声明居中，否则按钮会贴在左边缘。 */
+  .howto { margin: 22px auto 0; max-width: 330px; text-align: center; }
+  .howto .primary {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 9px 22px; font-size: var(--fs-lg); font-weight: 500; cursor: pointer;
+    background: var(--brand); color: #fff; border: none;
+    border-radius: var(--radius);
+    transition: background .12s ease;
+  }
+  .howto .primary:hover { background: var(--brand-ink); }
+
+  /* 错误态：不再是居中的一行红字，而是带图标的提示块 */
+  .err {
+    display: inline-flex; align-items: flex-start; gap: 8px;
+    padding: 11px 14px; border-radius: var(--radius);
+    background: var(--danger-soft); border: 1px solid var(--danger-line);
+    color: var(--danger-ink); font-size: var(--fs-md); line-height: 1.6;
+    text-align: left; max-width: 360px;
+  }
+  .err::before { content: '!'; flex: none; font-weight: 600; }
+  .diag {
+    margin-top: 13px; padding: 10px 12px; text-align: left;
+    background: var(--surface); border: 1px solid var(--line);
+    border-radius: var(--radius); font-size: var(--fs-md);
+  }
+  .drow {
+    display: flex; align-items: baseline; gap: 6px;
+    padding: 3px 0; color: var(--ink-3); line-height: 1.5;
+  }
+  .drow b { font-weight: 500; color: var(--ink); flex: none; }
+  .dot {
+    width: 6px; height: 6px; border-radius: 50%; flex: none;
+    transform: translateY(-1px);
+  }
+  .dot.ok { background: var(--brand); }
+  .dot.no { background: var(--ink-4); }
+  /* 返回按钮。
+     箭头从文本字符 ← 换成内联 SVG：字符箭头按字体度量对齐，
+     视觉上永远偏上一点，且形状/粗细随系统字体变化，无法控制。
+     SVG 的垂直居中交给 align-items，权重也跟着调色板走。 */
+  .back {
+    display: inline-flex; align-items: center; gap: 6px;
+    margin: 0 0 11px; padding: 6px 13px 6px 10px; cursor: pointer;
+    font-size: var(--fs-lg); color: var(--ink-2);
+    background: var(--surface); border: 1px solid var(--line);
+    border-radius: var(--radius-sm);
+    transition: background .12s ease, border-color .12s ease, color .12s ease;
+  }
+  .back svg { flex: none; display: block; }
+  .back:hover { background: var(--brand-soft); border-color: var(--brand-line); color: var(--brand-text); }
+  .back:hover svg path { stroke: var(--brand); }
+  .back:active { background: var(--brand-soft); }
+  .back:focus-visible { outline: 2px solid var(--brand); outline-offset: 1px; }
+
+  /* ===== 收藏 ===== */
+  .star {
+    flex: none; padding: 6px 12px; cursor: pointer; font-size: var(--fs-md);
+    border-radius: var(--radius-sm); border: 1px solid var(--line);
+    background: var(--surface); color: var(--ink-3);
+    display: inline-flex; align-items: center; gap: 5px;
+  }
+  .star:hover { background: var(--surface-3); }
+  .star.on { background: var(--brand-soft); color: var(--brand-text); border-color: var(--brand-line); }
+
+  /* 收藏：与历史一致的纯图片网格 */
+  .fitem {
+    position: relative;
+    aspect-ratio: 1;
+    border-radius: var(--radius-sm); overflow: hidden;
+    cursor: pointer; background: var(--surface-3);
+    border: 1px solid var(--line);
+    /* 与 .hitem 同一套参数：两个网格格子同尺寸，手感必须一致 */
+    transition: transform .16s cubic-bezier(.2,.7,.3,1),
+                border-color .16s ease,
+                box-shadow .16s ease;
+  }
+  .fitem:hover {
+    border-color: var(--brand);
+    transform: translateY(-1.5px) scale(1.03);
+    box-shadow: 0 4px 12px rgba(31,29,28,.14);
+    z-index: 1;/* overflow:hidden 会裁掉抬起的部分，必须抬层级 */
+  }
+  .fitem:active { transform: translateY(0) scale(.99); transition-duration: .08s; }
+  .fitem:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; }
+  .fitem img {
+    width: 100%; height: 100%; object-fit: cover; display: block;
+    animation: vitem-fade .22s ease both;
+  }
+  .fitem .ph {
+    width: 100%; height: 100%; background: var(--surface-3);
+    animation: ph-breathe 2s ease-in-out infinite;
+  }
+  /* 「已编辑」角标：只提示状态，不干扰浏览 */
+  .fitem .ftag {
+    position: absolute; left: 3px; bottom: 3px;
+    font-size: 9px; line-height: 1; padding: 2px 4px;
+    background: var(--brand-soft); color: var(--brand-text); border-radius: 4px;
+  }
+  /* 取消收藏：hover 才出现，鼠标移开即隐藏 */
+  .fitem .fx {
+    position: absolute; right: 3px; top: 3px;
+    width: 18px; height: 18px; padding: 0; cursor: pointer;
+    font-size: var(--fs-xs); line-height: 1;
+    background: rgba(41,37,36,.62); color: #fff;
+    border: none; border-radius: var(--radius-sm);
+    opacity: 0; transition: opacity .12s ease;
+  }
+  /* .fx 是 .fitem 的子元素，父级抬升 + overflow:hidden 会裁掉它，
+     所以它自己也要跟着父级一起过渡，否则 ✕ 会在格子边缘被切。 */
+  .fitem .fx { transition: opacity .12s ease, transform .16s cubic-bezier(.2,.7,.3,1); }
+  .fitem:hover .fx { opacity: 1; }
+  .fitem .fx:hover { background: var(--danger-ink); }
+
+  /* 网格上方的一行操作提示 */
+  .gridtip {
+    margin: 0 0 8px; font-size: var(--fs-sm); color: var(--ink-4);
+  }
+  .fav-empty { font-size: var(--fs-sm); color: var(--ink-4); text-align: center; padding: 14px 0; }
+
+  /* ===== 轻提示 ===== */
+  .toast {
+    position: fixed; left: 50%; bottom: 22px;
+    transform: translate(-50%, 8px);
+    z-index: 200; pointer-events: none;
+    max-width: 82vw;
+    padding: 8px 14px; border-radius: var(--radius);
+    background: rgba(41,37,36,.93); color: #fff;
+    font-size: var(--fs-md); line-height: 1.45; text-align: center;
+    opacity: 0; transition: opacity .16s ease, transform .16s ease;
+    box-shadow: var(--shadow-2);
+  }
+  .toast.show { opacity: 1; transform: translate(-50%, 0); }
+  .toast b { display: block; font-weight: 500; }
+  .toast span { display: block; font-size: var(--fs-sm); opacity: .8; margin-top: 1px; }
+  .toast.err { background: var(--danger); }
+
+  /* ===== 重复反推确认 ===== */
+  /* 重复反推提示条：弱存在感的一行字，不抢结果的注意力。
+     用 --surface-3 而不是品牌色底 —— 它是「顺带告诉一句」的信息，
+     不是需要被点击的主操作。
+
+     两行竖排而不是 flex 横排：横排时正文会被挤到第一行的剩余宽度里，
+     一句话断成两截（"…旧结果在下方缩略图" / "里，点击可切换"），
+     而「点击可切换」正好是断在最该读的地方。 */
+  .rehit {
+    display: block;
+    margin: 8px 0 0; padding: 8px 11px;
+    font-size: var(--fs-md); line-height: 1.6;
+    color: var(--ink-3); background: var(--surface-3);
+    border-radius: var(--radius-sm);
+  }
+  /* 标题与说明各占一整行，不用 flex，不用 inline 元素挤同一行 */
+  .rehit b {
+    display: block; color: var(--ink-2);
+    font-weight: 500; margin-bottom: 2px;
+  }
+  .rehit span { display: block; }
+
+  #dup { text-align: center; padding: 42px 26px 20px; }
+  #dup img {
+    width: 148px; height: 148px; object-fit: contain;
+    border-radius: var(--radius); margin: 0 auto 15px; display: block;
+    background: var(--surface-3);
+  }
+  #dup h2 { font-size: var(--fs-xl); font-weight: 500; margin: 0 0 5px; }
+  #dup .sub { font-size: var(--fs-md); color: var(--ink-3); margin: 0 0 18px; }
+  #dup .fphint {
+    font: 10px/1.4 ui-monospace, monospace; color: var(--ink-4);
+    margin: 0 0 18px; word-break: break-all;
+  }
+  .dup-actions {
+    display: flex; flex-direction: column; gap: 7px;
+    max-width: 300px; margin: 0 auto;
+  }
+  .dup-actions button {
+    padding: 10px; font-size: var(--fs-lg); cursor: pointer; border-radius: var(--radius-sm);
+    border: 1px solid var(--line); background: var(--surface); color: var(--ink);
+  }
+  .dup-actions button:hover { background: var(--surface-3); }
+  .dup-actions .primary { background: var(--brand); color: #fff; border-color: var(--brand); font-weight: 500; }
+  .dup-actions .ghostbtn { background: transparent; border-color: transparent; color: var(--ink-3); }
+
+  /* ===== 删除确认弹窗 =====
+     遮罩比 lightbox 浅一档：删除不是「沉浸式」操作，
+     压太黑会让用户以为进了图片查看。 */
+  .modal {
+    position: fixed; inset: 0; z-index: 150;
+    background: rgba(41,37,36,.45);
+    display: flex; align-items: center; justify-content: center;
+    padding: 24px;
+  }
+  .mbox {
+    width: 100%; max-width: 320px;
+    background: var(--surface); border-radius: var(--radius-lg);
+    padding: 18px; box-shadow: 0 12px 32px rgba(41,37,36,.18);
+  }
+  .mbox h3 { margin: 0 0 7px; font-size: 14px; font-weight: 500; }
+  .mbox p { margin: 0 0 12px; font-size: var(--fs-md); line-height: 1.6; color: var(--ink-3); }
+  .cf-keep {
+    display: flex; align-items: center; gap: 8px;
+    padding: 8px 9px; margin-bottom: 12px; cursor: pointer;
+    font-size: var(--fs-md); color: var(--ink-3);
+    background: var(--bg); border-radius: var(--radius-sm);
+  }
+  .cf-keep input { margin: 0; cursor: pointer; accent-color: var(--brand); }
+  .cf-keep[hidden] { display: none; }
+  .cf-actions { display: flex; gap: 8px; }
+  .cf-actions button { flex: 1; padding: 8px; cursor: pointer; font-size: var(--fs-lg); border-radius: var(--radius); }
+  .cf-actions .ghostbtn {
+    background: var(--bg); border: 1px solid var(--line); color: var(--ink-3);
+  }
+  .cf-actions .ghostbtn:hover { background: var(--surface-3); }
+  .cf-actions .dangerbtn {
+    background: var(--danger-ink); border: 1px solid var(--danger-ink); color: #fff;
+  }
+  .cf-actions .dangerbtn:hover { background: var(--danger); }
+
+  /* 历史网格的删除叉号。放右上角，与收藏的 .fx 保持一致；
+     左上角是多选模式的勾选框，右下角是次数角标，右上是唯一的空位。 */
+  .hitem .hx {
+    position: absolute; right: 3px; top: 3px; z-index: 2;
+    width: 18px; height: 18px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: var(--fs-xs); line-height: 1; cursor: pointer;
+    background: rgba(41,37,36,.62); color: #fff;
+    border-radius: var(--radius-sm);
+    opacity: 0; transition: opacity .12s ease;
+    user-select: none;
+  }
+  .hitem:hover .hx { opacity: 1; }
+  .hitem .hx:hover { background: var(--danger-ink); }
+  /* 多选模式下叉号让位给勾选框：这时候的删除入口是批量删除条 */
+  .pickmode .hitem .hx { display: none; }
+  /* 已选中的格子也不显示叉号，避免与选中态打架 */
+  .hitem.picked .hx { display: none; }
+
+  /* ===== 图片放大 ===== */
+  #lightbox {
+    position: fixed; inset: 0; z-index: 100;
+    background: rgba(41,37,36,.85);
+    display: flex; align-items: center; justify-content: center;
+    padding: 24px; cursor: zoom-out;
+  }
+  #lightbox img {
+    max-width: 100%; max-height: 100%;
+    border-radius: var(--radius-lg);
+    /* 整块遮罩任意位置都能点掉，图上也要给同样的指针提示。
+       图片本身默认 cursor:auto，视觉上完全不暗示「点图可关」，
+       而图正中恰恰是用户最想关的地方。 */
+    cursor: zoom-out;
+    /* 没有 src 时 img 会显示 alt 文字并占位，显式隐藏避免露出破图 */
+    display: block;
+  }
+  #lightbox img:not([src]),
+  #lightbox img[src=''] { display: none; }
+  #lightbox .close {
+    position: absolute; top: 14px; right: 16px;
+    font-size: var(--fs-md); color: #fff; background: rgba(255,255,255,.16);
+    border: none; padding: 5px 11px; border-radius: var(--radius-sm); cursor: pointer;
+  }
+
+  /* 版本标记：极低调，不干扰内容 */
+  #buildTag {
+    padding: 4px 0 16px; text-align: center;
+    font: 10px ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--ink-4);
+    user-select: none;
+  }
+
+  main.dragging::after {
+    content: '松开以反推这张图片';
+    position: fixed; inset: 12px; z-index: 99;
+    display: flex; align-items: center; justify-content: center;
+    border: 2px dashed var(--brand); border-radius: var(--radius-lg);
+    background: rgba(250,249,247,.95);
+    color: var(--ink-3); font-size: 14px;
+  }
+</style>
+</head>
+<body>
+<header>
+    <div class="logo"></div>
+    <h1>拾光</h1>
+    <button id="clear" class="ghost">清空历史</button>
+  </header>
+
+<main id="main">
+  <div class="state" id="state">
+    <div class="glyph">✦</div>
+    <h2>等待图片</h2>
+    <p>右键网页上的任意图片，即可开始反推</p>
+  </div>
+  <div class="howto" id="howto">
+    <button id="pick" class="primary">选择本地图片</button>
+  </div>
+
+  <div id="result" hidden>
+    <button id="back" class="back" hidden>
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+        <path d="M15 5l-7 7 7 7" stroke="var(--ink-3)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+      </svg>
+      <span>返回</span>
+    </button>
+
+    <!-- 图片优先：预览置顶 -->
+    <div class="hero">
+      <img id="heroImg" alt="点击查看原图" title="点击查看原图" />
+    </div>
+
+    <div class="pad">
+      <div class="cap" id="picCap">—</div>
+
+      <!-- 重复反推提示条。
+           以前重复反推会被一个确认界面拦下，压根不调用模型；
+           现在改成每次都真反推，旧结果作为 siblings 一起送进来。
+           这条提示的作用是告诉用户「下面那些缩略图是这张图的历史结果」，
+           否则新结果和旧结果在界面上长得一样，看不出区别。 -->
+      <p class="rehit" id="rehit" hidden></p>
+
+      <!-- 自定义提示词没按双语要求返回时的说明。
+           放在引擎切换之前：用户看到中文栏是英文，先要知道原因，
+           再去切换或改提示词。 -->
+      <p class="hint warn" id="langHint" hidden></p>
+
+      <!-- 结果流：当前这张图的多次反推，纯缩略图网格 + 序号。
+           与历史网格同构，但格子更大 —— 这里要比的是同图不同次的结果，
+           缩略图得看得清内容才好判断哪次更好。
+           位置在引擎切换之上：切图是「换一批内容」，
+           引擎切换是「看同一批内容的另一种语言」，两者不该被隔开。 -->
+      <div class="vgrid" id="vlist" hidden></div>
+
+      <div class="seg" id="engines">
+        <button data-engine="nanobanana" aria-pressed="true">英文</button>
+        <button data-engine="seedance" aria-pressed="false">中文</button>
+      </div>
+
+      <div class="prompt-wrap" id="promptWrap">
+        <div class="lab"><span>提示词 · 可直接编辑</span><span id="pLen"></span></div>
+        <textarea id="prompt" spellcheck="false"></textarea>
+      </div>
+
+      <div class="foot">
+        <button class="primary" id="copy">复制提示词</button>
+        <button id="star" class="star">收藏</button>
+        <button id="reset">重置</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 收藏与历史独立于结果区 ——
+       放在 #result 里的话，空态下它们整个不存在，
+       界面会变成「空白页 + 一句展开下方的指引」，而那个指引指向不存在的元素。
+       提到 main 末尾，任何状态下都是可达的。 -->
+  <div class="sides">
+    <details class="fold" id="favorites" hidden>
+      <summary id="fTitle">我的收藏</summary>
+      <div class="fold-body">
+        <p class="gridtip">单击看大图 · 双击打开提示词 · 右键直接复制</p>
+        <div class="hgrid" id="flist"></div>
+        <div class="fav-empty" id="fEmpty" hidden>还没有收藏。在反推结果页点「收藏」即可存下来。</div>
+      </div>
+    </details>
+
+    <details class="fold" id="history" hidden>
+      <summary id="hTitle">历史记录</summary>
+      <div class="fold-body">
+        <div class="filters" id="hFilters">
+          <button class="chip on" data-filter="all">全部</button>
+          <button class="chip" data-filter="multi">多次反推</button>
+          <span class="spacer"></span>
+          <button class="chip" id="pickToggle">多选</button>
+          <button class="chip danger" id="clearOne" hidden>删除</button>
+        </div>
+        <p class="gridtip">单击看大图 · 双击打开提示词 · 右键直接复制</p>
+        <div class="selinfo" id="selInfo" hidden>
+          <span id="selCount">已选 0 张</span>
+          <button id="selAll">全选</button>
+          <button id="selNone">取消</button>
+        </div>
+        <div class="hgrid" id="hlist"></div>
+        <div class="empty-h" id="hEmpty" hidden>没有符合条件的历史</div>
+      </div>
+    </details>
+  </div>
+
+  <!-- 重复反推确认 -->
+  <div id="dup" hidden>
+    <img id="dupImg" alt="" />
+    <h2>这张图之前反推过</h2>
+    <p class="sub" id="dupSub"></p>
+    <p class="fphint" id="dupFp" hidden></p>
+    <div class="dup-actions">
+      <button class="primary" id="dupView">查看之前的反推结果</button>
+      <button id="dupAgain">重新反推一次</button>
+      <button class="ghostbtn" id="dupCancel">取消</button>
+    </div>
+  </div>
+
+  <div id="buildTag"></div>
+</main>
+
+<div id="lightbox" hidden>
+  <button class="close">关闭 ✕</button>
+  <img id="lbImg" alt="原图" />
+</div>
+
+<!--
+  删除确认弹窗。
+  不用原生 confirm()：它没法带「不再提示」勾选，且样式与面板完全脱节。
+  删除是不可撤销操作，必须给一次反悔的机会；但每天都删的人不该被
+  同一句话反复拦住 —— 所以把「不再提示」的选择持久化。
+-->
+<div class="modal" id="confirmModal" hidden>
+  <div class="mbox" role="dialog" aria-modal="true" aria-labelledby="cfTitle">
+    <h3 id="cfTitle">确认删除</h3>
+    <p id="cfBody"></p>
+    <label class="cf-keep" id="cfKeepWrap">
+      <input type="checkbox" id="cfKeep" />
+      <span>不再提示，直接删除</span>
+    </label>
+    <div class="cf-actions">
+      <button class="ghostbtn" id="cfCancel">取消</button>
+      <button class="dangerbtn" id="cfOk">删除</button>
+    </div>
+  </div>
+</div>
+
+<script type="module" src="panel.js"></script>
+</body>
+</html>

@@ -1,0 +1,12 @@
+# 统一换行符。
+#
+# 为什么需要：Windows 上 clone 会得到 CRLF，Linux/macOS 上是 LF。
+# 同一份代码在两个平台间来回看，每个文件都会显示「整文件被修改」，
+# diff 完全没法读 —— 而这恰恰是 review 时最需要看清的地方。
+* text=auto eol=lf
+
+# 二进制文件不做任何转换
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.ico binary

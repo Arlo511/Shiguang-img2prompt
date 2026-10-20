@@ -1,0 +1,37 @@
+# 依赖与产物
+node_modules/
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
+
+# 打包产物
+*.zip
+*.crx
+*.xpi
+dist/
+build/
+release/
+
+# 本地配置与密钥 —— 绝不能提交
+.env
+.env.*
+*.local.json
+secrets.json
+
+# 编辑器与系统
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+
+# 日志
+*.log
+npm-debug.log*
+yarn-error.log*
+
+# 预览产物（排版对比用的临时文件，不属于扩展）
+_preview/
+preview/
+*.tmp

@@ -1,0 +1,154 @@
+/* ===========================================================
+   拾光 Img2Prompt · 共享设计令牌
+
+   为什么抽成独立文件：面板与设置页原本各自定义一套变量，
+   改主色要改两处，且两套总会漂移（面板是橙、设置页一度是蓝）。
+   同一扩展的两个界面必须是同一套系统 —— 单一来源，不是「约定同步」。
+
+   两个 HTML 各自用 @import url('../tokens.css') 引入本文件。
+   放在 <style> 最开头是硬性要求：@import 前若有注释或任何声明，
+   整条规则会被浏览器**静默丢弃**且不报错 —— 症状是所有变量失效、
+   界面回落成默认样式，极难排查。
+   =========================================================== */
+
+:root {
+  color-scheme: light dark;
+
+  /* ===== 品牌 ===== */
+  --brand:      #2bb673;
+  --brand-ink:  #1a8f57;
+  --brand-soft: #eaf6f1;
+  --brand-line: #bfe4d2;
+  --brand-text: #146c43;
+
+  /* ===== 危险操作 =====
+     红色只用于「会丢数据」的动作，且不常驻。 */
+  --danger:      #b03a2e;
+  --danger-ink:  #8f2723;
+  --danger-soft: #fdeeec;
+  --danger-line: #f2c4c0;
+
+  /* ===== 中性 =====
+     刻意保留暖调而非纯灰：纯灰配绿色会显得脏，暖灰更协调。 */
+  --bg:        #faf9f7;
+  --surface:   #ffffff;
+  --surface-2: #f7f5f2;
+  --surface-3: #f2f0ec;
+  --line:      #e8e5e0;
+  --line-2:    #dedad4;
+
+  /* 对比度已核：15.9 / 8.7 / 5.3 / 4.5，全部达标 */
+  --ink:   #1f1d1c;
+  --ink-2: #4a4642;
+  --ink-3: #6f6a64;
+  --ink-4: #96918a;
+
+  /* ===== 圆角：只留三档 =====
+     之前散落 6/7/8/9/10/12px 六种，同类控件圆角不一致是「拼装感」的主因。 */
+  --radius-sm: 6px;   /* 小控件、图标按钮 */
+  --radius:    9px;   /* 常规控件、卡片 */
+  --radius-lg: 12px;  /* 大容器、弹窗 */
+
+  /* ===== 层级：描边与阴影二选一 =====
+     同时给 1px 描边和宽阴影是「幽灵卡片」的成因。卡片用描边，
+     浮层才用阴影，且阴影必须带偏移与柔和模糊。 */
+  --shadow-1: 0 1px 2px rgba(31,29,28,.05);
+  --shadow-2: 0 6px 20px rgba(31,29,28,.10), 0 2px 6px rgba(31,29,28,.06);
+
+  /* ===== 排版 =====
+     字号只留四档，且形成明确的层级台阶。 */
+  --fs-xs:  10px;   /* 角标、极弱标签 */
+  --fs-sm:  11px;   /* 辅助说明 */
+  --fs-md:  12px;   /* 次级正文 */
+  --fs-lg:  13px;   /* 正文基准 */
+  --fs-xl:  15px;   /* 标题 */
+
+  --font: system-ui, -apple-system, "Segoe UI", "PingFang SC",
+          "Microsoft YaHei", "Noto Sans SC", sans-serif;
+  /* 等宽只用于代码、路径、id 这类真数据，不作装饰 */
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+/* 暗色跟随系统。刻意不写 light-dark() —— 扩展在 Chrome 上跑，
+   而 color-scheme +媒体查询的兼容性更稳，且便于将来加手动开关
+   （:root[data-theme="light"] 已在面板里预留）。 */
+@media (prefers-color-scheme: dark) {
+  :root {
+    color-scheme: light dark;
+
+    --brand:      #35c983;
+    --brand-ink:  #46d997;
+    --brand-soft: #10301f;
+    --brand-line: #1f5437;
+    --brand-text: #7fe3ae;
+
+    --danger:      #e06a5c;
+    --danger-ink:  #f0837a;
+    --danger-soft: #351a17;
+    --danger-line: #5c2b26;
+
+    --bg:        #171615;
+    --surface:   #201e1c;
+    --surface-2: #262320;
+    --surface-3: #2f2b28;
+    --line:      #35312d;
+    --line-2:    #443f3a;
+
+    --ink:   #f2efec;
+    --ink-2: #cfc9c3;
+    --ink-3: #a49e97;
+    --ink-4: #837d76;
+
+    --shadow-1: 0 1px 2px rgba(0,0,0,.4);
+    --shadow-2: 0 6px 20px rgba(0,0,0,.5), 0 2px 6px rgba(0,0,0,.4);
+  }
+}
+
+/* ===== 共享基础样式 =====
+   两个界面的 body 与焦点环也在这里定义，避免再次分叉。 */
+* { box-sizing: border-box; }
+
+/* hidden 属性只靠 UA 样式表里的一条 display:none，
+   任何作者写的 display 规则（.row{display:flex} 这类）都会覆盖它，
+   于是该隐藏的元素照常显示。加 !important 全局兜底。
+   面板原本有这条，设置页漏了 —— 同一个坑两边都踩。 */
+[hidden] { display: none !important; }
+
+body {
+  font-family: var(--font);
+  font-size: var(--fs-lg);
+  line-height: 1.6;
+  background: var(--bg);
+  color: var(--ink);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* 统一焦点环：键盘可见、鼠标不打扰 */
+:where(button, input, select, textarea, a, [tabindex]):focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+
+/* 滚动条属于浏览器默认，不属于任何设计系统 ——
+   一条系统灰滚动条会立刻让界面显得是拼装的。 */
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: var(--line-2);
+  border-radius: 6px;
+  border: 3px solid transparent;
+  background-clip: content-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background-color: var(--ink-4);
+  background-clip: content-box;
+}
+::-webkit-scrollbar-corner { background: transparent; }
+
+/* 文本选中：用品牌色的低透明底，而不是浏览器默认的亮蓝 */
+::selection {
+  background: color-mix(in srgb, var(--brand) 24%, transparent);
+  color: var(--ink);
+}

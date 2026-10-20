@@ -1,0 +1,58 @@
+{
+  "manifest_version": 3,
+  "name": "拾光 Img2Prompt",
+  "version": "1.0.0",
+  "description": "右键网页图片、拖入本地图片或粘贴截图，一键反推出中英双语的图片提示词，可直接粘贴使用。",
+  "permissions": [
+    "contextMenus",
+    "storage",
+    "activeTab",
+    "scripting",
+    "unlimitedStorage",
+    "clipboardRead"
+  ],
+  "host_permissions": [
+    "<all_urls>",
+    "https://apihub.agnes-ai.com/*",
+    "https://api.deepseek.com/*",
+    "https://generativelanguage.googleapis.com/*"
+  ],
+  "background": {
+    "service_worker": "src/background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_popup": "src/popup/popup.html",
+    "default_title": "拾光 Img2Prompt"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["src/content.js"],
+      "run_at": "document_start",
+      "world": "ISOLATED",
+      "all_frames": true
+    }
+  ],
+  "options_page": "src/popup/popup.html",
+  "commands": {
+    "cycle-preset": {
+      "suggested_key": {
+        "default": "Alt+Shift+P"
+      },
+      "description": "切换到下一个提示词方案"
+    },
+    "copy-prompt": {
+      "suggested_key": {
+        "default": "Alt+Shift+C"
+      },
+      "description": "复制当前面板里的提示词"
+    }
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
+}

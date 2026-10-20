@@ -1,0 +1,461 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<title>拾光</title>
+<style>
+  @import url('../tokens.css');
+
+  body {
+    margin: 0; width: 360px;
+  }
+
+  /* 顶栏：与面板同规格（46px + 底边），两个界面切换时视感连续 */
+  header {
+    height: 46px; padding: 0 16px;
+    display: flex; align-items: center; gap: 9px;
+    background: var(--surface-2); border-bottom: 1px solid var(--line);
+    position: sticky; top: 0; z-index: 10;
+  }
+  header .logo {
+    width: 22px; height: 22px; border-radius: var(--radius-sm); flex: none;
+    background: var(--brand) url('../../icons/icon48.png') center/cover no-repeat;
+  }
+  header h1 {
+    font-size: var(--fs-lg); font-weight: 600; margin: 0; flex: 1;
+    letter-spacing: -.01em;
+  }
+
+  /* 统一卡片容器。原来用 5 个 <hr> 把页面切成横条，
+     每条之间靠空隙分隔，边界模糊、层级不清。 */
+  main { padding: 14px 14px 22px; }
+  .card {
+    background: var(--surface); border: 1px solid var(--line);
+    border-radius: var(--radius-lg); padding: 15px;
+    margin-bottom: 12px;
+  }
+  /* 卡片标题：页面里唯一的「大」字（14px/500）。
+     .tag 是标题右侧的极弱标记 —— 状态而非内容，不该抢注意力。 */
+  .card > h2 {
+    font-size: var(--fs-lg); font-weight: 500; margin: 0;
+    display: flex; align-items: center; gap: 7px;
+  }
+  .card > h2 .tag {
+    font-size: var(--fs-xs); font-weight: 400; color: var(--ink-4);
+    background: var(--surface-3); padding: 1px 6px; border-radius: 4px;
+  }
+  /* 分区副标题：一句话说明这个分区是干什么的。
+     与 h2 的区分靠**字号 + 颜色 + 间距**三重差，
+     只靠颜色不够 —— 弱视或强光下两者会糊成一块。 */
+  .card > .sub {
+    font-size: var(--fs-sm); color: var(--ink-4);
+    margin: 5px 0 12px; line-height: 1.6;
+  }
+  .field + .field { margin-top: 12px; }
+  .field > label {
+    display: block; font-size: var(--fs-sm); color: var(--ink-4); margin-bottom: 5px;
+  }
+
+  /* 下拉框 + 「新建」同行。下拉框自适应宽度、按钮按内容宽度 ——
+     不给按钮 flex:1，否则「新建」两个字会占掉整行的三分之一，
+     把方案名挤到看不清（方案名是这段文字里唯一的信息量所在）。 */
+  .selrow { display: flex; gap: 7px; }
+  .selrow > select { flex: 1; min-width: 0; }
+  button.btn.new { flex: none; padding: 8px 14px; }
+
+  /* 受服务商影响的动态提示：keyHint 会随provider 变长（Gemini 最长），
+     所以放在输入框**下方**而不是 label 后面，否则一行放不下会挤乱布局。 */
+  .hint {
+    margin: 6px 0 0; font-size: var(--fs-sm); line-height: 1.55;
+    color: var(--ink-4); white-space: pre-line;
+  }
+
+  /* 快捷键录制器。做成 button 而不是 input[type=text]：
+     浏览器的原生快捷键输入框无法阻止 Ctrl+W 之类被浏览器占用的组合，
+     而这里需要在 keydown 阶段 preventDefault 才能录到任意组合。 */
+  .recorder {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 10px; width: 100%; padding: 9px 11px; cursor: pointer;
+    font: var(--fs-lg)/1.4 inherit; text-align: left;
+    background: var(--bg); color: var(--ink-3);
+    border: 1px dashed var(--line); border-radius: var(--radius);
+  }
+  .recorder:hover { border-color: var(--brand); }
+  .recorder[data-armed="1"] {
+    border-style: solid; border-color: var(--brand);
+    background: var(--brand-soft); color: var(--ink);
+  }
+  .recorder[data-armed="1"] #scVal { color: var(--brand); font-weight: 500; }
+  .recorder em {
+    font-style: normal; font-size: var(--fs-sm); color: var(--ink-4);
+    flex: none;
+  }
+  .recorder[data-armed="1"] em { color: var(--brand-text); }
+  .hint[hidden] { display: none; }
+  .hint.warn { color: var(--danger-ink); }
+
+  /* 输入控件。textarea 是提示词正文的载体，必须与其它输入框同规格 */
+  input[type=text], input[type=password], select, textarea {
+    width: 100%; padding: 8px 10px; font-size: var(--fs-lg); font-family: inherit;
+    border: 1px solid var(--line); border-radius: var(--radius);
+    background: var(--bg); color: var(--ink);
+  }
+  textarea { resize: vertical; min-height: 90px; line-height: 1.6; }
+  input:focus, select:focus, textarea:focus {
+    outline: none; border-color: var(--brand);
+    /* 用 color-mix 而不是写死 rgba：品牌色变一次，这里自动跟随 */
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--brand) 18%, transparent);
+  }
+  input::placeholder, textarea::placeholder { color: var(--ink-4); }
+
+  /* 分段控件：与面板的 .seg 同规格 */
+  .seg { display: flex; gap: 2px; padding: 2px; background: var(--surface-3); border-radius: var(--radius); }
+  .seg button {
+    flex: 1; margin: 0; padding: 6px 4px; cursor: pointer;
+    font: 12px/1.4 inherit; color: var(--ink-3);
+    background: transparent; border: none; border-radius: var(--radius-sm);
+  }
+  .seg button[aria-pressed="true"] {
+    background: var(--surface); color: var(--ink); font-weight: 500;
+    box-shadow: 0 1px 2px rgba(0,0,0,.05);
+  }
+
+  /* 复选项：从「上下堆叠的label + 小字说明」改成紧凑单行。
+     三个触发方式的说明文字都收进 title，避免长期占版面。 */
+  .checks { display: flex; flex-direction: column; gap: 2px; }
+  .check {
+    display: flex; align-items: center; gap: 9px;
+    padding: 7px 8px; margin: 0; cursor: pointer; border-radius: var(--radius-sm);
+    font-size: var(--fs-lg); color: var(--ink-2);
+  }
+  .check:hover { background: var(--bg); }
+  .check input { margin: 0; cursor: pointer; accent-color: var(--brand); }
+  .check .rec {
+    font-size: var(--fs-xs); color: var(--brand-text); background: var(--brand-soft);
+    padding: 1px 5px; border-radius: 4px;
+  }
+  .check.locked { opacity: .45; cursor: not-allowed; }
+  .check.locked:hover { background: none; }
+
+  /* 按钮：主次分明。保存是主操作，测试连接是次级，
+     原来两个都是蓝色满宽，视觉权重一样。 */
+  .row { display: flex; gap: 7px; margin-top: 12px; }
+  .row.solo { margin-top: 10px; }
+  button.btn {
+    flex: 1; padding: 8px; cursor: pointer; font-size: var(--fs-lg);
+    border-radius: var(--radius); border: 1px solid var(--line);
+    background: var(--bg); color: var(--ink-3);
+  }
+  button.btn:hover { background: var(--surface-3); }
+  button.btn.primary {
+    background: var(--brand); color: #fff; border-color: var(--brand);
+  }
+  button.btn.primary:hover { background: var(--brand-ink); }
+  button.btn:disabled { opacity: .45; cursor: default; }
+  button.btn:focus-visible { outline: 2px solid var(--brand); outline-offset: 1px; }
+
+  /* 状态行：成功用绿，失败用红。原来成功是绿字、失败红字，
+     但没有底色区分，扫一眼看不出是哪条。 */
+  .status {
+    font-size: var(--fs-md); margin-top: 10px; min-height: 17px;
+    line-height: 1.6; word-break: break-word; border-radius: var(--radius-sm);
+    padding: 0 9px;
+  }
+  .status.ok { color: var(--brand-text); background: var(--brand-soft); padding: 7px 9px; }
+  .status.err { color: var(--danger-ink); background: var(--danger-soft); padding: 7px 9px; }
+
+  /* 空状态必须彻底消失。
+     .status.ok/.err 与 .status:empty 特异性相同（都是两个 class 级），
+     后声明的 ok/err 会赢 —— 于是「已保存设置」消失后，绿色底色和
+     内边距会永久留在界面上。所以这条必须放在 ok/err 之后，
+     并用 !important 盖住它们的 padding。 */
+  .status:empty {
+    padding: 0 !important;
+    margin-top: 0;
+    min-height: 0;
+    background: none;
+    border: 0;
+  }
+
+  /* 链接型动作：不用蓝色下划线，跟随主色 */
+  .link {
+    background: none; border: none; padding: 0; cursor: pointer;
+    font: 12px inherit; color: var(--ink-4);
+    text-decoration: underline; text-underline-offset: 3px;
+  }
+  .link:hover { color: var(--brand); }
+  /* 请求期间禁止重复点击：否则连点几次会并发发好几遍请求，
+     后到的响应覆盖先到的，提示内容对不上。 */
+  .link:disabled { color: var(--ink-4); opacity: .5; cursor: default; text-decoration: none; }
+  .linkrow { margin-top: 10px; display: flex; align-items: center; gap: 10px; }
+
+  /* 打开面板：整个插件的主入口，视觉上应该是最强的一块。
+     原来夹在设置区中间、灰底灰字，和「测试连接」区分不开。 */
+  .open-panel {
+    display: flex; align-items: center; gap: 11px; width: 100%;
+    margin: 0; padding: 13px 14px; cursor: pointer; text-align: left;
+    font: inherit; color: var(--ink);
+    background: var(--brand-soft); border: 1px solid var(--brand-line); border-radius: var(--radius);
+  }
+  .open-panel:hover { background: var(--brand-soft); border-color: var(--brand-line); }
+  .open-panel:disabled { opacity: .55; cursor: wait; }
+  .open-panel i {
+    flex: none; width: 30px; height: 30px; border-radius: var(--radius);
+    background: var(--brand); display: flex; align-items: center; justify-content: center;
+    font-style: normal; font-size: 14px; color: #fff;
+  }
+  .open-panel b { display: block; font-size: var(--fs-lg); font-weight: 500; }
+  .opmsg {
+    margin: 8px 0 0; font-size: var(--fs-md); line-height: 1.5; color: var(--ink-3);
+  }
+  .opmsg.err { color: var(--danger-ink); }
+
+  /* 占位符速查：把可用符号做成可点的芯片，
+     比让用户照着文档猜 {siet} 该怎么写友好得多。 */
+  .tokens { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 7px; }
+  .tokens button {
+    font: var(--font-mono); font-size: var(--fs-xs);
+    padding: 2px 6px; cursor: pointer;
+    border: 1px solid var(--line); border-radius: 4px;
+    background: var(--bg); color: var(--ink-3);
+  }
+  .tokens button:hover { background: var(--brand-soft); color: var(--brand-text); border-color: var(--brand-line); }
+  .tokens button::after { content: attr(data-desc); margin-left: 5px; color: var(--ink-4); }
+  .tokens button:hover::after { color: var(--brand-text); }
+</style>
+</head>
+<body>
+<header>
+  <div class="logo"></div>
+  <h1>拾光</h1>
+</header>
+
+<main>
+
+<!-- 打开面板：主入口独立成卡，放在最上面。
+     它不属于「设置」，但现在是唯一能不反推就进面板的方式，
+     埋在一堆配置项中间等于没有。 -->
+<div class="card">
+  <button class="open-panel" id="openPanel">
+    <i>✦</i>
+    <span>
+      <b>打开面板</b>
+    </span>
+  </button>
+  <p class="opmsg" id="opMsg" hidden></p>
+</div>
+
+<!-- 视觉模型 -->
+<div class="card">
+  <h2>视觉模型</h2>
+  <p class="sub">反推由这个模型完成</p>
+
+  <div class="field">
+    <label>服务商</label>
+    <div class="seg" id="provider">
+      <button data-p="agnes" aria-pressed="true">Agnes</button>
+      <button data-p="deepseek" aria-pressed="false">DeepSeek</button>
+      <button data-p="gemini" aria-pressed="false">Gemini</button>
+    </div>
+    <p class="hint" id="provHint"></p>
+  </div>
+
+  <div class="field">
+    <label id="keyLabel">API Key</label>
+    <input type="password" id="apiKey" placeholder="粘贴 API Key" autocomplete="off" />
+    <p class="hint" id="keyHint"></p>
+  </div>
+
+  <div class="field">
+    <label>模型 ID</label>
+    <select id="model"></select>
+  </div>
+
+  <div class="linkrow">
+    <a class="link" id="docs" href="#" target="_blank" rel="noreferrer">官方文档</a>
+    <button class="link" id="test">测试连接</button>
+  </div>
+
+  <div class="status" id="status"></div>
+
+  <div class="row">
+    <button class="btn primary" id="save">保存设置</button>
+  </div>
+</div>
+
+<!-- 触发方式 -->
+<div class="card">
+  <h2>触发方式 <span class="tag">勾选即生效</span></h2>
+  <p class="sub">怎么把图片喂给插件</p>
+
+  <div class="checks">
+    <label class="check" title="在网页图片上右键 →「用拾光反推提示词」。最可靠，零误触。">
+      <input type="checkbox" id="tContextMenu" checked />
+      <span>右键菜单</span>
+      <span class="rec">推荐</span>
+    </label>
+
+    <label class="check" title="可拖拽至面板或页面角落，支持网页图片和本地图片">
+      <input type="checkbox" id="tDragDrop" />
+      <span>拖拽</span>
+    </label>
+
+    <label class="check" title="在网页里按快捷键粘贴图片。默认关闭，避免干扰网页编辑器。">
+      <input type="checkbox" id="tPaste" />
+      <span>快捷键粘贴</span>
+    </label>
+  </div>
+
+  <div class="field" id="pasteBox">
+    <label>粘贴快捷键</label>
+    <!-- 录制式输入：点一下进入「按下你想用的组合键」状态，
+         实际按键被捕获并存成规范化字符串。没有预设下拉 ——
+         封闭枚举表必然漏，且 Ctrl+Shift+V 在 Chrome 里是
+         「粘贴为纯文本」，clipboardData 里根本没有图片。 -->
+    <button type="button" class="recorder" id="scRec" data-armed="0">
+      <span id="scVal">未设置</span>
+      <em id="scHint">点击后按下组合键</em>
+    </button>
+    <p class="hint" id="scMsg" hidden></p>
+  </div>
+
+  <!-- 触发方式自己的回显位。不复用视觉模型那块 #status：
+       那个位置在另一张卡片里，勾了拖拽却在上面显示「已生效」，
+       视线要跨半屏才找得到，弹窗又只有 352px 宽。 -->
+  <div class="status" id="trigStatus"></div>
+</div>
+
+<!-- 输出引擎 -->
+<!-- 提示词方案：可多套保存切换。这是常用配置（不同图类需要不同侧重），
+     所以放在主区而不是高级折叠里。 -->
+<div class="card">
+  <h2>提示词方案</h2>
+  <p class="sub">反推时用哪套提示词</p>
+
+  <!-- 「新建」是对**下拉列表**的操作，不是对当前这一套的操作，
+       所以放在下拉框右侧同行，而不是挤进下方的保存/删除按钮行 ——
+       放下面会让人以为它只作用于当前方案。 -->
+  <div class="field">
+    <label for="presetSel">当前使用</label>
+    <div class="selrow">
+      <select id="presetSel"></select>
+      <button class="btn new" id="presetNew" title="新建一套空白提示词方案">新建</button>
+    </div>
+  </div>
+
+  <div id="presetActions" hidden>
+    <div class="field">
+      <label for="presetName">方案名称</label>
+      <input type="text" id="presetName" placeholder="给这套提示词起个名字" />
+    </div>
+
+    <div class="field">
+      <label for="presetBody">提示词内容</label>
+      <textarea id="presetBody" rows="12" spellcheck="false"
+        style="font: var(--font-mono); font-size: var(--fs-md); line-height:1.6;"
+        placeholder="描述你要模型关注什么。例如：只关注主体、光线与色调，不要场景描述。"></textarea>
+    </div>
+
+    <p class="hint warn" id="presetHint" hidden></p>
+
+    <div style="display:flex; gap:8px;">
+      <button class="btn primary" id="presetSave" style="flex:2;">保存</button>
+      <button class="btn" id="presetDelete" style="flex:1;">删除</button>
+    </div>
+  </div>
+
+  <p class="hint" style="margin-top:10px;">
+    改内置方案会另存为新方案。你只需写<strong style="font-weight:500">想关注什么</strong>，
+    输出格式与中英双语由插件处理。
+  </p>
+  <p class="hint" id="presetKeyHint" style="margin-top:6px;"></p>
+</div>
+
+<div class="card">
+  <h2>默认输出</h2>
+  <p class="sub">面板打开时显示哪一版</p>
+  <div class="seg" id="engine">
+    <button data-engine="nanobanana" aria-pressed="true">英文</button>
+    <button data-engine="seedance" aria-pressed="false">中文</button>
+  </div>
+</div>
+
+<!-- 使用习惯 -->
+<div class="card">
+  <h2>使用习惯 <span class="tag">勾选即生效</span></h2>
+  <p class="sub">省掉重复点击</p>
+
+  <div class="checks">
+    <label class="check" title="反推成功后立刻把当前语言的提示词写进剪贴板，不用再点复制。默认关闭。">
+      <input type="checkbox" id="tAutoCopy" />
+      <span>反推后自动复制</span>
+    </label>
+
+    <!-- 两个独立开关而不是一个「都展开」。
+         合并成一个的隐含假设是「用户对两者的偏好总是一致」，
+         但实际很常见：收藏只有三五张、值得常开；历史每天几十条，
+         展开会把首屏结果区挤下去。绑在一起就等于强迫他二选一。 -->
+    <label class="check" title="打开面板时自动展开收藏区。">
+      <input type="checkbox" id="tFavOpen" />
+      <span>默认展开收藏</span>
+    </label>
+
+    <label class="check" title="打开面板时自动展开历史记录区。">
+      <input type="checkbox" id="tHistOpen" />
+      <span>默认展开历史</span>
+    </label>
+  </div>
+
+  <div class="field">
+    <label>记录命名格式</label>
+    <input type="text" id="nameFormat" spellcheck="false"
+      placeholder="{date} {time}-{site}-{seq}" />
+    <p class="hint" id="nameFmtMsg"></p>
+    <div class="tokens" id="nameTokens"></div>
+  </div>
+
+  <div class="status" id="habitStatus"></div>
+</div>
+
+<!-- 备份 -->
+<div class="card">
+  <h2>备份与恢复</h2>
+  <p class="sub">换机或重装时导出、导入即可恢复。历史与收藏不含在内。</p>
+
+  <label class="check" style="padding-left:0;">
+    <input type="checkbox" id="expKeys" />
+    <span>包含 API Key<em style="font-style:normal;color:var(--ink-4);font-size:var(--fs-xs);">（明文，请自行保管）</em></span>
+  </label>
+  <div class="row">
+    <button class="btn" id="btnExport">导出设置</button>
+    <button class="btn" id="btnImport">导入设置</button>
+  </div>
+  <input type="file" id="fileImport" accept="application/json,.json" hidden />
+  <div class="status" id="backupStatus"></div>
+</div>
+
+<!-- 「调用方式」曾在这里（自带 Key / 公共服务）。
+     公共服务尚未启用，一个填了也不生效的配置不该占据设置页版面，
+     所以整块移除，只在 api.js 里保留 mode 契约（默认 byok），
+     等公共服务真上线时再把 UI 加回来。 -->
+
+</main>
+
+<!--
+  「打开面板」的绑定在 open-panel.js，而不放在 popup.js。
+
+  popup.js 是 type="module"，静态 import 会**先于**任何代码执行 ——
+  只要 api.js / providers.js / vlm.js 里任何一处在加载期抛错，
+  整个 popup.js 就不执行，里面绑好的监听全部落空。
+  表现为「按钮在，点它毫无反应」，且没有任何报错提示。
+
+  打开面板是进入这个插件的**唯一入口**，不能和那些可选功能的
+  可用性绑在一起，所以用一段不依赖任何 import 的独立脚本兜底。
+
+  注意：必须是独立文件。MV3 的 CSP 是 script-src 'self'，
+  内联<script> 会被直接拒绝执行。
+-->
+<script src="open-panel.js"></script>
+<script type="module" src="popup.js"></script>
+</body>
+</html>
