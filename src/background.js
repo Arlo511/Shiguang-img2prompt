@@ -1314,8 +1314,19 @@ function resolveImageInPage(srcUrl, preferSrcUrl) {
       const imgs = Array.from(document.images || []);
       const hit =
         imgs.find((i) => i.currentSrc === srcUrl || i.src === srcUrl) ||
-        imgs.find((i) => (i.currentSrc || '').split(/[?!#]/)[0] === key) ||
-        imgs.find((i) => (i.currentSrc || i.src || '').split(/[?!#]/)[0].endsWith(key.split('/').pop()));
+        imgs.find((i) => (i.currentSrc || '').split(/[?!#]/)[0] === key);
+
+      // 曾经还有第三档「只比文件名」的兜底：
+      //   imgs.find((i) => url.endsWith(key.split('/').pop()))
+      // 已删除。CDN 图片的 URL 结尾高度相似（同一批素材常共用文件名），
+      // 这条几乎必然命中**另一张**图，而且一旦命中就 return，
+      // 后面更可靠的标记命中路径根本没机会跑 ——
+      // 表现为「右键选A、反推出来的是B」。
+      //
+      // 宁可这一档落空、继续往下走去查标记，也不能在这里猜。
+      // 两条精确匹配足够覆盖 srcUrl 确实来自某个 <img> 的情形；
+      // 落空时后面的几何与标记路径能正确处理。
+
       if (hit) {
         const r = fromImg(hit);
         if (r?.url) return { ...r, source: preferSrcUrl ? 'browser' : r.source };
