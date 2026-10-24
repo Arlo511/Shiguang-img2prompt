@@ -1342,7 +1342,6 @@ function resolveImageInPage(srcUrl, preferSrcUrl) {
           if (r?.url) return { ...r, source: preferSrcUrl ? 'browser' : r.source };
         }
       }
-    }
 
       // 页面上找不到对应 img（可能在 iframe 里），但 srcUrl 本身可用
       if (preferSrcUrl) {
